@@ -63,7 +63,7 @@ async def handle_game(message: Message) -> None:
         try:
             int(message.text)
         except ValueError:
-            await message.answer("Please enter a correct type!")
+            await message.answer("Please enter a valid number!")
             return
 
         if State.attempts > 0:
