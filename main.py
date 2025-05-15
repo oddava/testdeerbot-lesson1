@@ -8,7 +8,10 @@ import random
 from aiogram import Bot, Dispatcher, html, F
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.filters import CommandStart
+from aiogram.filters import CommandStart, Command
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import StatesGroup, State
+from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import Message
 from dotenv import load_dotenv
 
@@ -17,18 +20,15 @@ TOKEN = getenv("BOT_TOKEN")
 
 rand = lambda: random.randint(1, 100)
 
-class State:
-    game: bool = False
-    computer_guess: int = None
-    attempts: int = 8
-    previous_guesses: list = []
+async def reset_state(state: FSMContext):
+    await state.update_data(computer_guess=rand(), attempts=8, previous_numbers=[])
+    await state.clear()
 
-def reset_state():
-    State.attempts = 8
-    State.previous_guesses = []
-    State.game = False
+dp = Dispatcher(storage=MemoryStorage())
 
-dp = Dispatcher()
+class GameState(StatesGroup):
+    guessing = State()
+
 
 @dp.message(CommandStart())
 async def command_start_handler(message: Message) -> None:
@@ -45,43 +45,39 @@ async def age_handler(message: Message) -> None:
 
     await message.answer(f"You're {years_old} years {months_old} months old.")
 
-@dp.message(F.text == "game")
-async def game(message: Message) -> None:
-    State.game = True
+@dp.message(Command("game"))
+async def game(message: Message, state: FSMContext) -> None:
+    await state.set_state(GameState.guessing)
+    await state.update_data(computer_guess=rand(), attempts=8, previous_numbers=[])
     await message.answer("*game started*", parse_mode="markdown")
     await message.answer("Computer chose a number between 1 and 100, can you try to guess it?")
-    State.computer_guess = rand()
 
-@dp.message()
-async def handle_game(message: Message) -> None:
-    if message.text == "quit":
-        await message.answer("Thanks for playing")
-        await message.answer("*game ended*", parse_mode="markdown")
-        reset_state()
+@dp.message(GameState.guessing)
+async def handle_game(message: Message, state: FSMContext) -> None:
+    try:
+        int(message.text)
+    except ValueError:
+        await message.answer("Please enter a valid number!")
         return
-    elif State.game:
-        try:
-            int(message.text)
-        except ValueError:
-            await message.answer("Please enter a valid number!")
-            return
 
-        if State.attempts > 0:
-            computer_guess = State.computer_guess
-            State.attempts = State.attempts - 1
-            if int(message.text) != computer_guess:
-                hint = "bigger" if int(message.text) < computer_guess else "smaller"
-                State.previous_guesses.append(int(message.text))
-                await message.answer(f"Wrong, try to choose {hint} value.\nAttempts left: {State.attempts}\nPrevious guesses: {State.previous_guesses}")
-                return
-            await message.answer(f"Correct! It was {computer_guess}, thanks for playing.")
-            await message.answer("*game ended*", parse_mode="markdown")
-            reset_state()
+    state_data = await state.get_data()
+    if state_data.get("attempts") > 0:
+        computer_guess = state_data.get("computer_guess")
+        await state.update_data(attempts=state_data.get("attempts")-1)
+        if int(message.text) != computer_guess:
+            hint = "bigger" if int(message.text) < computer_guess else "smaller"
+            await state.update_data(previous_numbers=[*state_data.get("previous_numbers"), int(message.text)])
+            attempts = state_data.get("attempts")
+            prev_guesses = state_data.get("previous_numbers")
+            await message.answer(f"Wrong, try to choose {hint} value.\nAttempts left: {attempts}\nPrevious guesses: {prev_guesses}")
             return
-        await message.answer("Oops, you're out of attempts")
+        await message.answer(f"Correct! It was {computer_guess}, thanks for playing.")
         await message.answer("*game ended*", parse_mode="markdown")
-        reset_state()
-    await message.send_copy(message.chat.id)
+        await reset_state(state)
+        return
+    await message.answer("Oops, you're out of attempts")
+    await message.answer("*game ended*", parse_mode="markdown")
+    await reset_state(state)
 
 async def main() -> None:
     bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
